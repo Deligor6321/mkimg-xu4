@@ -195,7 +195,8 @@ IMG_SIZE=2000
 
 # check sudo rights
 if [ "$EUID" -ne 0 ]; then
-	die "Please run as root"
+	error "Please run as root"
+	exit 1
 fi
 
 # do preparation
