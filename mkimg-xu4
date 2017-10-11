@@ -1,0 +1,319 @@
+#!/bin/bash
+
+# set to 1 to enable verbose output
+DEBUG=0
+exec 3>/dev/null
+
+
+# logging routines
+WARNINGS=0
+ERRORS=0
+CLEAR="$(tput sgr0)"
+INFO="$(tput bold)"
+RED="$(tput setaf 1)$(tput bold)"
+GREEN="$(tput setaf 2)$(tput bold)"
+YELLOW="$(tput setaf 3)$(tput bold)"
+
+function info() {
+	echo "${INFO}$1${CLEAR}"
+}
+function error() {
+	ERRORS=$((ERRORS+1))
+	echo "${RED}$1${CLEAR}"
+}
+function warn() {
+	WARNINGS=$((WARNINGS+1))
+	echo "${YELLOW}$1${CLEAR}"
+}
+function success() {
+	echo "${GREEN}$1${CLEAR}"
+}
+function debug() {
+	if [ $DEBUG -eq 1 ]; then
+		echo "$1"
+	fi
+}
+
+
+
+function usage()
+{
+	echo "Utility to create self-installer image to ODROID-XU4"
+	echo ""
+	echo "Usage: $(basename $0) [-v|-h] [all|sd|emmc|sd2emmc] UPDATE OUTPUT_DIR"
+	echo "       -v: Verbose output"
+	echo "       -h: Show this help"
+	echo "       all | sd | emmc | sd2emmc : The way you want to deploy image to device"
+	echo "       UPDATE: The archive with built android images, e.g. ~/update.zip"
+	echo "       OUTPUT_DIR: The block device to write the image to, e.g. /dev/sdh"
+	echo "ex:"
+	echo "   mkimg-xu4 -v all update.zip ."
+	exit 1
+}
+
+function unmount() {
+	
+	if [ "$1" = "" ]; then
+		return 0
+	fi
+	
+	grep -q $1 /proc/mounts
+	if [ $? -eq 0 ]; then
+		debug "Unmounting $1"
+		umount $1 &>/dev/null 
+		! grep -q $1 /proc/mounts # check if unmounted successfully
+		return $?
+	fi
+	
+	return 0
+}
+
+function unsetlo() {
+	if [ "$1" = "" ]; then
+		return 0
+	fi
+
+	losetup -a | grep -q "$1"
+	if [ $? -eq 0 ]; then
+		debug "Detaching $1"
+		losetup -d "$1"
+		! ( losetup -a |  grep -q "$1" )
+		return $?
+	fi
+
+	return 0
+}
+
+function clean_up()
+{
+	rm -rf $TMPDIR 1>&3 2>&1 
+	unmount $MOUNTDIR 
+	unsetlo /dev/loop0
+}
+
+function die() {
+	error "$1"
+	clean_up
+	exit 1
+}
+
+function prepare_host()
+{
+	unmount $MOUNTDIR || die "Failed to unmount $MOUNTDIR"
+	unsetlo /dev/loop0 || die "Failed to detach /dev/loop0"
+	
+	# clean up work dirs
+	if [ -d $TMPDIR ]; then
+		rm -rf $TMPDIR 1>&3 2>&1 || die "Failed to clean $TMPDIR" 
+	fi
+	if [ -d $OUTDIR ]; then
+		rm -rf $OUTDIR 1>&3 2>&1 || die "Failed to clean $OUTDIR"
+	fi
+
+	# create work dirs
+	mkdir -p $TMPDIR 1>&3 2>&1 || die "Failed to create $TMPDIR"
+	mkdir $MOUNTDIR 1>&3 2>&1 || die "Failed to create $MOUNTDIR"
+	mkdir $OUTDIR 1>&3 2>&1 || die "Failed to create $OUTDIR"
+	
+	# extract update.zip
+	if [ ! -e $IN ]; then
+		die "Input file doesn't exist"
+	fi
+	cp $IN $TMPDIR/update.zip 1>&3 2>&1 \
+		|| die "Failed to copy input file to temporary directory"
+	unzip -qu $TMPDIR/update.zip -d $TMPDIR/ 1>&3 2>&1 \
+		|| die "Failed to extract input file"
+
+	return 0
+}
+
+
+
+
+
+
+# parse options
+while getopts ":vh" opt; do
+	case $opt in
+		v)
+			DEBUG=1
+			exec 3>&1
+			debug "Verbose output is enabled."
+			;;
+		h)
+			usage
+			;;
+		\?)
+			error "Invalid option: -$OPTARG"
+			usage
+			;;
+	esac
+done
+shift $((OPTIND -1))
+
+# parse mode
+case $1 in
+	all | emmc | sd | sd2emmc )
+		MODE=$1
+		;;
+	*)
+		error "Invalid mode: $1"
+		usage
+		;;
+esac
+shift
+
+# get main dirs
+CURRDIR="$( pwd )"
+BIN="$( readlink -e "$( cd "$( dirname ${BASH_SOURCE[0]} )"; pwd)/$( basename ${BASH_SOURCE[0]} )" )"
+WORKDIR="$( cd "$(dirname "$BIN")"; pwd )"
+IN="$( readlink -e "$( cd "$CURRDIR"; cd "$(dirname "$1")"; pwd )/$( basename "$1" )" )"
+OUT="$( cd "$CURRDIR"; cd "$(dirname "$2")"; pwd )"
+
+# go back to current dir
+cd "$CURRDIR"
+
+TMPDIR="/tmp/mkimg-xu4"
+MOUNTDIR="$TMPDIR/mount"
+BOOTDIR="$WORKDIR/boot"
+UBOOTDIR="$WORKDIR/uboot"
+OUTDIR="$OUT/out"
+
+info "Start image creation"
+
+# print info
+echo ""
+echo "Current directory: $CURRDIR"
+echo "Input file: $IN"
+echo "Output directory: $OUTDIR"
+debug "Temporary directory: $TMPDIR"
+debug "Working directory: $WORKDIR"
+debug "Mounting directory: $MOUNTDIR"
+echo ""
+
+IMG_SIZE=2000
+
+# check sudo rights
+if [ "$EUID" -ne 0 ]; then
+	die "Please run as root"
+fi
+
+# do preparation
+info "Preparing host..."
+prepare_host
+
+# make image of loop devices filled zero
+info "Creating dummy image..."
+dd if=/dev/zero of=$TMPDIR/dummy.img bs=1M count=$IMG_SIZE 1>&3 2>&1 \
+	|| die "Failed to create dummy image ($TMPDIR/dummy.img)"
+
+# mount loop devices
+info "Attaching loop device..."
+losetup /dev/loop0 $TMPDIR/dummy.img 1>&3 2>&1 \
+	|| die "Failed to attach dummy image to loop device"
+
+# create partition table
+info "Creating partition table..."
+parted /dev/loop0 mktable msdos 1>&3 2>&1 \
+	|| die "Failed to create partition table"
+
+# make filesystem
+info "Creating filesystem..."
+parted /dev/loop0 mkpart primary fat32 90 $IMG_SIZE 1>&3 2>&1 \
+	|| die "Failed to create partitions"
+mkfs.vfat -F 32 /dev/loop0p1 1>&3 2>&1 \
+	|| die "Failed to create filesystem"
+
+# fusing u-boot
+info "Fusing u-boot..."
+pushd $UBOOTDIR 1>&3 2>&1 || die "Failed to pushd $UBOOTDIR"
+./sd_fusing.sh /dev/loop0 1>&3 2>&1 || die "Failed to fuse u-boot"
+popd 1>&3 2>&1 || die "Failed to popd"
+
+# mount user fat partition
+info "Mounting loop device..."
+mount /dev/loop0p1 $MOUNTDIR/ 1>&3 2>&1 \
+	|| die "Failed to mount created partition"
+
+# copy android images and u-boot binaries
+info "Copying Android images and u-boot binaries..."
+cp $TMPDIR/update/* $MOUNTDIR/ 1>&3 2>&1 \
+	|| die "Failed to copy files"
+
+# unmount loop device
+unmount $MOUNTDIR 1>&3 2>&1 || die "Failed to unmount loop device"
+
+# eMMC
+if [ $MODE = "emmc" ] || [ $MODE = "all" ]; then
+	
+	info "Creating eMMC image..."
+	
+	# copy script for eMMC
+	mount /dev/loop0p1 $MOUNTDIR/ 1>&3 2>&1 \
+		|| die "Failed to mount loop device"
+	cp $BOOTDIR/emmc.ini $MOUNTDIR/boot.ini 1>&3 2>&1 \
+		|| die "Failed to copy boot.ini"
+	sleep 3
+	unmount $MOUNTDIR 1>&3 2>&1 || die "Failed to unmount loop device"
+
+	# dump binary
+	dd if=/dev/loop0 of=$OUTDIR/self-emmc.img bs=1M count=$IMG_SIZE 1>&3 2>&1 \
+		|| die "Failed to create eMMC image"
+fi
+
+# SD
+if [ $MODE = "sd" ] || [ $MODE = "all" ]; then
+	
+	info "Creating SD image..."
+
+	# copy script for SD
+	mount /dev/loop0p1 $MOUNTDIR/ 1>&3 2>&1 \
+		|| die "Failed to mount loop device"
+	cp $BOOTDIR/sd.ini $MOUNTDIR/boot.ini 1>&3 2>&1 \
+		|| die "Failed to copy boot.ini"
+	sleep 3
+	unmount $MOUNTDIR 1>&3 2>&1 || die "Failed to unmount loop device"
+
+	# dump binary
+	dd if=/dev/loop0 of=$OUTDIR/self-sd.img bs=1M count=$IMG_SIZE 1>&3 2>&1 \
+		|| die "Failed to create SD image"
+fi
+
+# SD to eMMC
+if [ $MODE = "sd2emmc" ] || [ $MODE = "all" ]; then
+	
+	info "Creating SD to eMMC image..."
+	
+	# copy script for SD to eMMC
+	mount /dev/loop0p1 $MOUNTDIR/ 1>&3 2>&1 \
+		|| die "Failed to mount loop device"
+	cp $BOOTDIR/sd2emmc.ini $MOUNTDIR/boot.ini 1>&3 2>&1 \
+		|| die "Failed to copy boot.ini"
+	sleep 3
+	unmount $MOUNTDIR 1>&3 2>&1 || die "Failed to unmount loop device"
+
+	# dump binary
+	dd if=/dev/loop0 of=$OUTDIR/sd2emmc.img bs=1M count=$IMG_SIZE 1>&3 2>&1 \
+		|| die "Failed to create SD to eMMC image"
+fi
+
+# do clean up
+info "Cleaning up..."
+clean_up
+
+# print summary
+echo ""
+if [ $WARNINGS -ne 0 ] && [ $ERRORS -eq 0 ]; then
+	echo "${YELLOW}Image created with warnings${CLEAR}"
+	echo "${YELLOW}Warnings: $WARNINGS${CLEAR}"
+elif [ $ERRORS -ne 0 ]; then
+	echo "${RED}Image creation encountered errors${CLEAR}"
+	echo "${RED}Errors: $ERRORS${CLEAR}"
+	echo "${YELLOW}Warnings: $WARNINGS${CLEAR}"
+else
+	success "Image created successfully"
+fi
+echo ""
+
+exit 0
+
