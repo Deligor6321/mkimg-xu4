@@ -4,6 +4,8 @@
 DEBUG=0
 exec 3>/dev/null
 
+# set to 1 to run image creating without the confirmation
+FORCE=0
 
 # logging routines
 WARNINGS=0
@@ -133,12 +135,15 @@ function prepare_host()
 
 
 # parse options
-while getopts ":vh" opt; do
+while getopts ":vfh" opt; do
 	case $opt in
 		v)
 			DEBUG=1
 			exec 3>&1
 			debug "Verbose output is enabled."
+			;;
+		f)
+			FORCE=1
 			;;
 		h)
 			usage
@@ -149,7 +154,7 @@ while getopts ":vh" opt; do
 			;;
 	esac
 done
-shift $((OPTIND -1))
+shift $((OPTIND - 1))
 
 # parse mode
 case $1 in
@@ -179,7 +184,6 @@ BOOTDIR="$WORKDIR/boot"
 UBOOTDIR="$WORKDIR/uboot"
 OUTDIR="$OUT/out"
 
-info "Start image creation"
 
 # print info
 echo ""
@@ -191,7 +195,22 @@ debug "Working directory: $WORKDIR"
 debug "Mounting directory: $MOUNTDIR"
 echo ""
 
+
+# ask for the confirmation
+if [ $FORCE -eq 0 ]; then
+	read -r -p "Continue? [Y/n] " response
+	response=$( tr '[:upper:]' '[:lower:]' <<< "$response" ) # to lower case
+	if [[ ! $response =~ ^(yes|y| ) ]] && [[ ! -z $response ]]; then
+		info "Image creation aborted by user."
+		exit 0
+	fi
+fi
+
+
+# set image size
 IMG_SIZE=2000
+
+info "Start image creation"
 
 # check sudo rights
 if [ "$EUID" -ne 0 ]; then
