@@ -2,7 +2,7 @@
 ```
 Utility to create self-installer image to ODROID-XU4
 
-Usage: $(basename $0) [-v|-f|-h] [all|sd|emmc|sd2emmc] UPDATE OUTPUT_DIR
+Usage: mkimg-xu4 [-v|-f|-h] [all|sd|emmc|sd2emmc] UPDATE OUTPUT_DIR
     -v: Enable verbose output
     -f: Don't ask for confirmation of the image creation
     -h: Show this help
