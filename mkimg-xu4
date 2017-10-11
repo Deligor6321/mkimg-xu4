@@ -42,14 +42,16 @@ function usage()
 {
 	echo "Utility to create self-installer image to ODROID-XU4"
 	echo ""
-	echo "Usage: $(basename $0) [-v|-h] [all|sd|emmc|sd2emmc] UPDATE OUTPUT_DIR"
-	echo "       -v: Verbose output"
-	echo "       -h: Show this help"
-	echo "       all | sd | emmc | sd2emmc : The way you want to deploy image to device"
-	echo "       UPDATE: The archive with built android images, e.g. ~/update.zip"
-	echo "       OUTPUT_DIR: The block device to write the image to, e.g. /dev/sdh"
-	echo "ex:"
-	echo "   mkimg-xu4 -v all update.zip ."
+	echo "Usage: $(basename $0) [-v|-f|-h] [all|sd|emmc|sd2emmc] UPDATE OUTPUT_DIR"
+	echo "    -v: Enable verbose output"
+	echo "    -f: Don't ask for confirmation of the image creation"
+	echo "    -h: Show this help"
+	echo "    all | sd | emmc | sd2emmc : The way you want to deploy image to the device"
+	echo "    UPDATE: The archive with built android images, e.g. ~/update.zip"
+	echo "    OUTPUT_DIR: The block device to write the image to, e.g. /dev/sdh"
+	echo ""
+	echo "Example:"
+	echo "    mkimg-xu4 -vf all update.zip ."
 	exit 1
 }
 
@@ -144,6 +146,7 @@ while getopts ":vfh" opt; do
 			;;
 		f)
 			FORCE=1
+			debug "Forced run is enabled"
 			;;
 		h)
 			usage
@@ -160,6 +163,8 @@ shift $((OPTIND - 1))
 case $1 in
 	all | emmc | sd | sd2emmc )
 		MODE=$1
+		debug ""
+		debug "Mode set to '$1'"
 		;;
 	*)
 		error "Invalid mode: $1"
